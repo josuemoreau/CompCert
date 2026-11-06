@@ -35,6 +35,7 @@
 *)
 
 Require Import Coqlib.
+Require Import Integers. (* For ptrofs-indexed maps. *)
 
 (* To avoid useless definitions of inductors in extracted code. *)
 Local Unset Elimination Schemes.
@@ -1415,6 +1416,23 @@ Module NIndexed.
 End NIndexed.
 
 Module NMap := IMap(NIndexed).
+
+Module PtrofsIndexed.
+  Definition t := ptrofs.
+  Definition index (p: ptrofs): positive :=
+    ZIndexed.index (Ptrofs.unsigned p).
+  Lemma index_inj: forall (x y: ptrofs), index x = index y -> x = y.
+  Proof.
+    unfold index; intros * H.
+    apply ZIndexed.index_inj in H.
+    apply Ptrofs.same_if_eq.
+    unfold Ptrofs.eq; rewrite H, zeq_true.
+    reflexivity.
+  Qed.
+  Definition eq := Ptrofs.eq_dec.
+End PtrofsIndexed.
+
+Module PtrofsMap := IMap(PtrofsIndexed).
 
 (** * An implementation of maps over any type with decidable equality *)
 
