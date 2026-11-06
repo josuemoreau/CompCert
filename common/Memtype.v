@@ -120,17 +120,9 @@ Parameter store: forall (chunk: memory_chunk) (m: mem) (b: block) (ofs: Z) (v: v
 (** [loadv] and [storev] are variants of [load] and [store] where
   the address being accessed is passed as a value (of the [Vptr] kind). *)
 
-Definition loadv (chunk: memory_chunk) (m: mem) (addr: val) : option val :=
-  match addr with
-  | Vptr b ofs => load chunk m b (Ptrofs.unsigned ofs)
-  | _ => None
-  end.
+Parameter loadv: forall (chunk: memory_chunk) (m: mem) (addr: val), option val.
 
-Definition storev (chunk: memory_chunk) (m: mem) (addr v: val) : option mem :=
-  match addr with
-  | Vptr b ofs => store chunk m b (Ptrofs.unsigned ofs) v
-  | _ => None
-  end.
+Parameter storev: forall (chunk: memory_chunk) (m: mem) (addr v: val), option mem.
 
 (** [loadbytes m b ofs n] reads and returns the byte-level representation of
   the values contained at offsets [ofs] to [ofs + n - 1] within block [b]
@@ -1153,6 +1145,7 @@ Axiom alloc_left_mapped_inject:
   alloc m1 lo hi = (m1', b1) ->
   valid_block m2 b2 ->
   0 <= delta <= Ptrofs.max_unsigned ->
+  delta = 0 \/ 0 <= lo ->
   (forall ofs k p, perm m2 b2 ofs k p -> delta = 0 \/ 0 <= ofs < Ptrofs.max_unsigned) ->
   (forall ofs k p, lo <= ofs < hi -> perm m2 b2 (ofs + delta) k p) ->
   inj_offset_aligned delta (hi-lo) ->
