@@ -215,3 +215,129 @@ Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
 
 End FMem.
 
+(** * Allocator model *)
+
+(** To ensure the non-emptiness of the abstract allocator definition, we
+  provide a trivial bump allocator implementation. *)
+
+Module BumpAlloc <: ALLOCATOR.
+
+Definition state := ptrofs.
+Definition unallocated (s o: ptrofs) := (Ptrofs.unsigned s) <= (Ptrofs.unsigned o).
+
+Definition alloc (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
+  let lo := Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s) in
+  let hi := lo + Ptrofs.unsigned sz in
+  if zlt hi Ptrofs.modulus
+  then Some (Ptrofs.repr lo, Ptrofs.repr hi)
+  else None.
+
+Definition empty := Ptrofs.zero.
+
+Section ALLOC_FACTS.
+
+Variables (s: state) (m: mem) (sz: ptrofs) (a: ptrofs) (s': state).
+Hypothesis A: alloc s m sz = Some (a, s').
+Hypothesis U: unallocated_on (unallocated s) m.
+
+Fact alloc_representable:
+  Ptrofs.unsigned a + Ptrofs.unsigned sz < Ptrofs.modulus.
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  rewrite Ptrofs.unsigned_repr. assumption.
+  split.
+  - now apply Z.lcm_nonneg.
+  - change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
+    pose proof (Ptrofs.unsigned_range sz); lia.
+Qed.
+
+Fact lcm_le_r:
+  forall x y, 0 < x -> 0 <= y -> y <= Z.lcm x y.
+Proof.
+  intros * Hx Hy.
+  destruct (zeq y 0) as [->|].
+  now rewrite Z.lcm_0_r.
+  apply Z.divide_pos_le.
+- pose proof (Z.lcm_nonneg x y).
+  pose proof (Z.lcm_eq_0 x y).
+  lia.
+- now apply Z.divide_lcm_r.
+Qed.
+
+Let lo := Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s).
+Let hi := lo + Ptrofs.unsigned sz.
+
+Fact lo_representable:
+  hi < Ptrofs.modulus ->
+  0 <= lo <= Ptrofs.max_unsigned.
+Proof.
+  pose proof (Ptrofs.unsigned_range sz).
+  change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
+  split. now apply Z.lcm_nonneg. lia.
+Qed.
+
+Fact hi_representable:
+  hi < Ptrofs.modulus ->
+  0 <= hi <= Ptrofs.max_unsigned.
+Proof.
+  intros H.
+  generalize (lo_representable H).
+  pose proof (Ptrofs.unsigned_range sz).
+  change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
+  lia.
+Qed.
+
+Fact alloc_fresh:
+  unallocated_on (fun o =>
+    Ptrofs.unsigned a <= Ptrofs.unsigned o < Ptrofs.unsigned a + Ptrofs.unsigned sz) m.
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  intros o Ho.
+  pose proof (min_safe_alignment_pos (Ptrofs.unsigned sz)).
+  pose proof (Ptrofs.unsigned_range s).
+  apply U; unfold unallocated.
+  apply Z.le_trans with (2 := proj1 Ho).
+  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
+  apply lcm_le_r; lia.
+Qed.
+
+Fact alloc_unallocated:
+  forall o,
+    unallocated s' o ->
+    Ptrofs.unsigned o < Ptrofs.unsigned a
+    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  intros o; unfold unallocated.
+  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
+  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
+  now right.
+Qed.
+
+Fact alloc_unallocated_on:
+  unallocated_on (unallocated s') m.
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  intros o Ho.
+  apply U; unfold unallocated in *.
+  apply Z.le_trans with (2 := Ho).
+  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
+  pose proof (min_safe_alignment_pos (Ptrofs.unsigned sz)).
+  pose proof (Ptrofs.unsigned_range s).
+  pose proof (Ptrofs.unsigned_range sz).
+  transitivity (Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s)).
+  apply lcm_le_r; lia. lia.
+Qed.
+
+Fact alloc_aligned:
+  (min_safe_alignment (Ptrofs.unsigned sz) | Ptrofs.unsigned a).
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  pose proof (Ptrofs.unsigned_range sz).
+  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
+  now apply Z.divide_lcm_l.
+Qed.
+
+End ALLOC_FACTS.
+
+End BumpAlloc.
