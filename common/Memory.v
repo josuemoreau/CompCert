@@ -483,6 +483,22 @@ Proof.
   intros. lia.
 Qed.
 
+Remark setN_same:
+  forall vl c p d,
+    0 <= d < Z.of_nat (length vl) ->
+    ZMap.get (p + d) (Mem.setN vl p c) = nth (Z.to_nat d) vl Undef.
+Proof.
+  induction vl; simpl; intros.
+  lia.
+  destruct (zeq d 0).
+- subst; rewrite Z.add_0_r, setN_outside, ZMap.gss.
+  reflexivity. lia.
+- replace (p + d) with (p + 1 + (d - 1)) by lia.
+  rewrite IHvl by lia.
+  rewrite Z2Nat.inj_sub by lia.
+  destruct (Z.to_nat d) eqn:Hd. lia. now simpl; rewrite Nat.sub_0_r.
+Qed.
+
 Remark getN_setN_same:
   forall vl p c,
   getN (length vl) p (setN vl p c) = vl.
