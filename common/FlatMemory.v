@@ -319,6 +319,31 @@ Next Obligation.
   apply alloc_frame_perm_3 with (2 := P). lia.
 Qed.
 
+#[program]
+Definition free (m: fmem) (lo hi: ptrofs): option fmem :=
+  if range_perm_dec m lo hi Cur Freeable then
+    match A.free (fmem_allocator_state m) lo hi with
+    | None => None
+    | Some s' =>
+      Some (mkfmem
+        (Mem.unchecked_free m 1%positive (Ptrofs.unsigned lo) (Ptrofs.unsigned hi))
+        _ _ s' _)
+    end
+  else None.
+Next Obligation. now intros; simpl; apply fmem_oneblock. Qed.
+Next Obligation. now intros; simpl; apply fmem_no_ptr. Qed.
+Next Obligation.
+  simpl; intros * P * F%eq_sym.
+  apply (A.free_unallocated_on _ _ _ _ F).
+- intros o Ho.
+  unfold Mem.perm, Mem.unchecked_free; simpl.
+  rewrite PMap.gss; case zle; [|lia]; case zlt; [|lia]. easy.
+- intros o Ho.
+  specialize (fmem_unallocated m o Ho).
+  unfold Mem.perm, Mem.unchecked_free; simpl.
+  rewrite PMap.gss. now case (_ && _).
+Qed.
+
 End FMem.
 
 (** * Allocator model *)
