@@ -47,6 +47,7 @@ Module Type ALLOCATOR.
 Parameter state: Type.
 Parameter unallocated: state -> ptrofs -> Prop.
 Parameter alloc: state -> mem -> ptrofs -> option (ptrofs * state).
+Parameter free: state -> ptrofs -> ptrofs -> option state.
 Parameter empty: state.
 
 Section ALLOC_AXIOMS.
@@ -87,6 +88,20 @@ Axiom alloc_aligned:
   (min_safe_alignment (Ptrofs.unsigned sz) | Ptrofs.unsigned a).
 
 End ALLOC_AXIOMS.
+
+Section FREE_AXIOMS.
+
+Variables (s: state) (lo hi: ptrofs) (s': state).
+
+Axiom free_unallocated_on:
+  free s lo hi = Some s' ->
+  forall (m: mem),
+    unallocated_on (fun o =>
+      Ptrofs.unsigned lo <= Ptrofs.unsigned o < Ptrofs.unsigned hi) m ->
+    unallocated_on (unallocated s) m ->
+    unallocated_on (unallocated s') m.
+
+End FREE_AXIOMS.
 
 End ALLOCATOR.
 
@@ -323,6 +338,8 @@ Definition alloc (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
   then Some (Ptrofs.repr lo, Ptrofs.repr hi)
   else None.
 
+Definition free (s: state) (lo hi: ptrofs): option state := Some s.
+
 Definition empty := Ptrofs.zero.
 
 Section ALLOC_FACTS.
@@ -443,5 +460,20 @@ Proof.
 Qed.
 
 End ALLOC_FACTS.
+
+Section FREE_FACTS.
+
+Variables (s: state) (lo hi: ptrofs) (s': state).
+Hypothesis F: free s lo hi = Some s'.
+
+Fact free_unallocated_on:
+  forall (m: mem),
+    unallocated_on (fun o =>
+      Ptrofs.unsigned lo <= Ptrofs.unsigned o < Ptrofs.unsigned hi) m ->
+    unallocated_on (unallocated s) m ->
+    unallocated_on (unallocated s') m.
+Proof. now revert F; unfold free; intros [= <-]. Qed.
+
+End FREE_FACTS.
 
 End BumpAlloc.
