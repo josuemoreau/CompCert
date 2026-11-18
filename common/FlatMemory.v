@@ -38,6 +38,7 @@ Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
 - the memory space pointed to by [a] is unallocated;
 - the [unallocated] predicate on the new allocator state still covers
   unallocated space in [m];
+- the [unallocated] predicate no longer covers [ [a]..[a+sz] );
 - the pointer [a] is suitably aligned, as specified by the C99 standard.
 *)
 
@@ -73,6 +74,13 @@ Axiom alloc_unallocated_on:
   alloc s m sz = Some (a, s') ->
   unallocated_on (unallocated s) m ->
   unallocated_on (unallocated s') m.
+
+Axiom alloc_unallocated_sep:
+  alloc s m sz = Some (a, s') ->
+  forall o,
+    unallocated s' o ->
+    Ptrofs.unsigned o < Ptrofs.unsigned a
+    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
 
 Axiom alloc_aligned:
   alloc s m sz = Some (a, s') ->
@@ -213,6 +221,89 @@ Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
   | _ => None
   end.
 
+#[program]
+Definition alloc_frame (m: fmem) (lo hi: Z): mem :=
+  Mem.mkmem
+    (Mem.mem_contents m)
+    (PMap.set 1
+      (fun ofs k =>
+        if zle lo ofs && zlt ofs hi
+        then Some Freeable
+        else (Mem.mem_access m) !! 1 ofs k)
+      (Mem.mem_access m))
+    (Mem.nextblock m)
+    _ _ _.
+Next Obligation.
+  intros; rewrite PMap.gsspec; case peq as [->|?].
+  case (zle _ _ && zlt _ _). now simpl; apply perm_refl.
+  now apply Mem.access_max. now apply Mem.access_max.
+Qed.
+Next Obligation.
+  intros; rewrite PMap.gsspec; case peq as [->|?].
+  case (zle _ _ && zlt _ _). now rewrite fmem_oneblock in H; elim H.
+  now apply Mem.nextblock_noaccess. now apply Mem.nextblock_noaccess.
+Qed.
+Next Obligation.
+  intros; now apply Mem.contents_default.
+Qed.
+
+Lemma alloc_frame_perm_1:
+  forall m lo hi o,
+    lo <= o < hi ->
+    Mem.perm (alloc_frame m lo hi) 1%positive o Cur Freeable.
+Proof.
+  intros.
+  unfold alloc_frame, Mem.perm; simpl; rewrite PMap.gss.
+  destruct zle; [|lia]. destruct zlt; [|lia]. simpl.
+  now apply perm_refl.
+Qed.
+
+Lemma alloc_frame_perm_2:
+  forall (m: fmem) lo hi o k p,
+    o < lo \/ hi <= o ->
+    Mem.perm m 1%positive o k p ->
+    Mem.perm (alloc_frame m lo hi) 1%positive o k p.
+Proof.
+  intros.
+  unfold alloc_frame, Mem.perm; simpl; rewrite PMap.gss.
+  destruct zle; [destruct zlt|]; simpl. lia. assumption. assumption.
+Qed.
+
+Lemma alloc_frame_perm_3:
+  forall (m: fmem) lo hi o k p,
+    o < lo \/ hi <= o ->
+    Mem.perm (alloc_frame m lo hi) 1%positive o k p ->
+    Mem.perm m 1%positive o k p.
+Proof.
+  intros * H.
+  unfold alloc_frame, Mem.perm; simpl; rewrite PMap.gss.
+  destruct zle; [destruct zlt|]; simpl. lia. easy. easy.
+Qed.
+
+#[program]
+Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
+  match A.alloc (fmem_allocator_state m) m sz with
+  | None => None
+  | Some (a, s) =>
+    Some (mkfmem
+      (alloc_frame m (Ptrofs.unsigned a) (Ptrofs.unsigned a + Ptrofs.unsigned sz))
+      _ _ s _,
+      a)
+  end.
+Next Obligation. now intros; apply fmem_oneblock. Qed.
+Next Obligation. now intros; apply fmem_no_ptr. Qed.
+Next Obligation.
+  simpl; intros * A%eq_sym o Ho.
+  set (lo := Ptrofs.unsigned a). set (hi := lo + Ptrofs.unsigned sz).
+  assert (H: lo <= Ptrofs.unsigned o < hi \/
+             (Ptrofs.unsigned o < lo \/ hi <= Ptrofs.unsigned o)) by lia.
+  destruct H.
+- specialize (A.alloc_unallocated _ _ _ _ _ A o Ho). lia.
+- intro P.
+  elim (A.alloc_unallocated_on _ _ _ _ _ A (fmem_unallocated m) o Ho).
+  apply alloc_frame_perm_3 with (2 := P). lia.
+Qed.
+
 End FMem.
 
 (** * Allocator model *)
@@ -327,6 +418,19 @@ Proof.
   pose proof (Ptrofs.unsigned_range sz).
   transitivity (Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s)).
   apply lcm_le_r; lia. lia.
+Qed.
+
+Fact alloc_unallocated_sep:
+  forall o,
+    unallocated s' o ->
+    Ptrofs.unsigned o < Ptrofs.unsigned a
+    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
+Proof.
+  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  intros o; unfold unallocated.
+  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
+  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
+  now right.
 Qed.
 
 Fact alloc_aligned:
