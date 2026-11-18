@@ -76,13 +76,6 @@ Axiom alloc_unallocated_on:
   unallocated_on (unallocated s) m ->
   unallocated_on (unallocated s') m.
 
-Axiom alloc_unallocated_sep:
-  alloc s m sz = Some (a, s') ->
-  forall o,
-    unallocated s' o ->
-    Ptrofs.unsigned o < Ptrofs.unsigned a
-    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
-
 Axiom alloc_aligned:
   alloc s m sz = Some (a, s') ->
   (min_safe_alignment (Ptrofs.unsigned sz) | Ptrofs.unsigned a).
@@ -308,15 +301,10 @@ Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
 Next Obligation. now intros; apply fmem_oneblock. Qed.
 Next Obligation. now intros; apply fmem_no_ptr. Qed.
 Next Obligation.
-  simpl; intros * A%eq_sym o Ho.
-  set (lo := Ptrofs.unsigned a). set (hi := lo + Ptrofs.unsigned sz).
-  assert (H: lo <= Ptrofs.unsigned o < hi \/
-             (Ptrofs.unsigned o < lo \/ hi <= Ptrofs.unsigned o)) by lia.
-  destruct H.
-- specialize (A.alloc_unallocated _ _ _ _ _ A o Ho). lia.
-- intro P.
-  elim (A.alloc_unallocated_on _ _ _ _ _ A (fmem_unallocated m) o Ho).
-  apply alloc_frame_perm_3 with (2 := P). lia.
+  simpl; intros * A%eq_sym o U P.
+  specialize (A.alloc_unallocated _ _ _ _ _ A o U) as Ho'.
+  apply alloc_frame_perm_3 in P; [|lia].
+  now apply (A.alloc_unallocated_on _ _ _ _ _ A (fmem_unallocated m) o U).
 Qed.
 
 #[program]
@@ -460,19 +448,6 @@ Proof.
   pose proof (Ptrofs.unsigned_range sz).
   transitivity (Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s)).
   apply lcm_le_r; lia. lia.
-Qed.
-
-Fact alloc_unallocated_sep:
-  forall o,
-    unallocated s' o ->
-    Ptrofs.unsigned o < Ptrofs.unsigned a
-    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
-Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
-  intros o; unfold unallocated.
-  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
-  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
-  now right.
 Qed.
 
 Fact alloc_aligned:
