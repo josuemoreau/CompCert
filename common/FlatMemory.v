@@ -35,6 +35,7 @@ Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
   allocator needs to store across multiple calls.
   The [unallocated] predicate specifies the part of the memory that the
   allocator considers as unallocated, and in which it will allocate.
+
   The address [a] returned by [reserve s m sz] must satisfy the following
   properties:
 - [ [a]..[a+sz] ) can be indexed by the pointers of the architecture;
@@ -42,6 +43,12 @@ Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
   unallocated;
 - [ [a]..[a+sz] ) is disjoint from the memory that is still unallocated;
 - the address [a] is suitably aligned, as specified by the C99 standard.
+
+  The [release] function gives the unallocated range [ [lo]..[hi] ) to the
+  allocator. It must satisfy the following two properties:
+- any unallocated offset before [release] remains unallocated;
+- the unallocated offsets after [release] either were unallocated before or
+  are in the range [ [lo]..[hi] ).
 *)
 
 Module Type ALLOCATOR.
@@ -81,12 +88,15 @@ Section RELEASE_AXIOMS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
 
-Axiom release_unallocated_on:
+Axiom release_unallocated_1:
   release s lo hi = Some s' ->
-  forall (m: mem),
-    unallocated_on (fun o => lo <= o < hi) m ->
-    unallocated_on (unallocated s) m ->
-    unallocated_on (unallocated s') m.
+  forall (o: ptrofs),
+    unallocated s o -> unallocated s' o.
+
+Axiom release_unallocated_2:
+  release s lo hi = Some s' ->
+  forall (o: ptrofs),
+    unallocated s' o -> lo <= o < hi \/ unallocated s o.
 
 End RELEASE_AXIOMS.
 
@@ -150,6 +160,25 @@ Proof.
 Qed.
 
 End RESERVE_FACTS.
+
+Section RELEASE_FACTS.
+
+Variables (s: state) (lo hi: ptrofs) (s': state).
+
+Hypothesis (R: release s lo hi = Some s').
+
+Fact release_unallocated_on:
+  forall m,
+    unallocated_on (fun o => lo <= o < hi) m ->
+    unallocated_on (unallocated s) m ->
+    unallocated_on (unallocated s') m.
+Proof.
+  intros m U1 U2 o Ho.
+  destruct (release_unallocated_2 _ _ _ _ R o Ho).
+  now apply U1. now apply U2.
+Qed.
+
+End RELEASE_FACTS.
 
 End AllocatorFacts.
 
@@ -372,7 +401,7 @@ Next Obligation. now intros; simpl; apply fmem_oneblock. Qed.
 Next Obligation. now intros; simpl; apply fmem_no_ptr. Qed.
 Next Obligation.
   simpl; intros * P * F%eq_sym.
-  apply (A.release_unallocated_on _ _ _ _ F).
+  apply (AFacts.release_unallocated_on _ _ _ _ F).
 - intros o Ho.
   unfold Mem.perm, Mem.unchecked_free; simpl.
   rewrite PMap.gss; case zle; [|lia]; case zlt; [|lia]. easy.
@@ -501,14 +530,17 @@ End RESERVE_FACTS.
 Section RELEASE_FACTS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
-Hypothesis F: release s lo hi = Some s'.
+Hypothesis (R: release s lo hi = Some s').
 
-Fact release_unallocated_on:
-  forall (m: mem),
-    unallocated_on (fun o => lo <= o < hi) m ->
-    unallocated_on (unallocated s) m ->
-    unallocated_on (unallocated s') m.
-Proof. now revert F; unfold release; intros [= <-]. Qed.
+Fact release_unallocated_1:
+  forall (o: ptrofs),
+    unallocated s o -> unallocated s' o.
+Proof. now revert R; unfold release; intros [= <-]. Qed.
+
+Fact release_unallocated_2:
+  forall (o: ptrofs),
+    unallocated s' o -> lo <= o < hi \/ unallocated s o.
+Proof. now revert R; unfold release; intros [= <-]; right. Qed.
 
 End RELEASE_FACTS.
 
