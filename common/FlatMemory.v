@@ -22,8 +22,11 @@ Local Unset Case Analysis Schemes.
 
 Local Notation "a # b" := (ZMap.get (Ptrofs.unsigned b) (PMap.get 1%positive a)) (at level 1).
 
+#[local]
+Coercion Ptrofs.unsigned : ptrofs >-> Z.
+
 Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
-  forall o, P o -> ~Mem.perm m 1%positive (Ptrofs.unsigned o) Max Nonempty.
+  forall o, P o -> ~Mem.perm m 1%positive o Max Nonempty.
 
 (** * Abstract heap allocator *)
 
@@ -56,20 +59,17 @@ Variables (s: state) (m: mem) (sz: ptrofs) (a: ptrofs) (s': state).
 
 Axiom alloc_representable:
   alloc s m sz = Some (a, s') ->
-  Ptrofs.unsigned a + Ptrofs.unsigned sz < Ptrofs.modulus.
+  a + sz < Ptrofs.modulus.
 
 Axiom alloc_fresh:
   alloc s m sz = Some (a, s') ->
   unallocated_on (unallocated s) m ->
-  unallocated_on (fun o =>
-    Ptrofs.unsigned a <= Ptrofs.unsigned o < Ptrofs.unsigned a + Ptrofs.unsigned sz) m.
+  unallocated_on (fun o => a <= o < a + sz) m.
 
 Axiom alloc_unallocated:
   alloc s m sz = Some (a, s') ->
   forall o,
-    unallocated s' o ->
-    Ptrofs.unsigned o < Ptrofs.unsigned a
-    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
+    unallocated s' o -> o < a \/ a + sz <= o.
 
 Axiom alloc_unallocated_on:
   alloc s m sz = Some (a, s') ->
@@ -77,8 +77,7 @@ Axiom alloc_unallocated_on:
   unallocated_on (unallocated s') m.
 
 Axiom alloc_aligned:
-  alloc s m sz = Some (a, s') ->
-  (min_safe_alignment (Ptrofs.unsigned sz) | Ptrofs.unsigned a).
+  alloc s m sz = Some (a, s') -> (min_safe_alignment sz | a).
 
 End ALLOC_AXIOMS.
 
@@ -89,8 +88,7 @@ Variables (s: state) (lo hi: ptrofs) (s': state).
 Axiom free_unallocated_on:
   free s lo hi = Some s' ->
   forall (m: mem),
-    unallocated_on (fun o =>
-      Ptrofs.unsigned lo <= Ptrofs.unsigned o < Ptrofs.unsigned hi) m ->
+    unallocated_on (fun o => lo <= o < hi) m ->
     unallocated_on (unallocated s) m ->
     unallocated_on (unallocated s') m.
 
@@ -139,21 +137,21 @@ Record fmem := mkfmem {
 }.
 
 Definition perm (m: fmem) (addr: ptrofs) (k: perm_kind) (p: permission): Prop :=
-  Mem.perm m 1%positive (Ptrofs.unsigned addr) k p.
+  Mem.perm m 1%positive addr k p.
 
 Definition perm_dec:
   forall m addr k p, {perm m addr k p} + {~ perm m addr k p}.
 Proof. now intros; apply Mem.perm_dec. Defined.
 
 Definition range_perm (m: fmem) (lo hi: ptrofs) (k: perm_kind) (p: permission): Prop :=
-  Mem.range_perm m 1%positive (Ptrofs.unsigned lo) (Ptrofs.unsigned hi) k p.
+  Mem.range_perm m 1%positive lo hi k p.
 
 Lemma range_perm_dec:
   forall m lo hi k p, {range_perm m lo hi k p} + {~ range_perm m lo hi k p}.
 Proof. now intros; apply Mem.range_perm_dec. Defined.
 
 Definition valid_access (m: fmem) (chunk: memory_chunk) (addr: ptrofs) (p: permission): Prop :=
-  Mem.valid_access m chunk 1%positive (Ptrofs.unsigned addr) p.
+  Mem.valid_access m chunk 1%positive addr p.
 
 Lemma valid_access_dec:
   forall m chunk ofs p,
@@ -171,12 +169,12 @@ Definition match_ptrofs (v: val) : option ptrofs :=
   end.
 
 Definition load (chunk: memory_chunk) (m: fmem) (addr: ptrofs): option val :=
-  Mem.load chunk m 1%positive (Ptrofs.unsigned addr).
+  Mem.load chunk m 1%positive addr.
 
 Definition loadv (chunk: memory_chunk) (m: fmem) (addr: val): option val :=
   match match_ptrofs addr with
   | Some a =>
-    if zle (Ptrofs.unsigned a + size_chunk chunk) Ptrofs.modulus
+    if zle (a + size_chunk chunk) Ptrofs.modulus
     then load chunk m a
     else None
   | _ => None
@@ -189,41 +187,41 @@ Definition store (chunk: memory_chunk) (m: fmem) (addr: ptrofs) (v: val): option
   match not_ptr v with
   | false => None
   | true =>
-    match Mem.store chunk m 1%positive (Ptrofs.unsigned addr) v with
+    match Mem.store chunk m 1%positive addr v with
     | Some m' => Some (mkfmem m' _ _ (fmem_allocator_state m) _)
     | None => None
     end
   end.
 Next Obligation.
-  simpl; intros * Hv * H.
-  rewrite Mem.nextblock_store with (1 := eq_sym H).
+  simpl; intros * Hv * H%eq_sym.
+  rewrite Mem.nextblock_store with (1 := H).
   now apply fmem_oneblock.
 Qed.
 Next Obligation.
-  simpl; intros * Hv * H o.
-  rewrite Mem.store_mem_contents with (1 := eq_sym H).
+  simpl; intros * Hv * H%eq_sym o.
+  rewrite Mem.store_mem_contents with (1 := H).
   rewrite PMap.gss.
-  destruct (zlt (Ptrofs.unsigned o) (Ptrofs.unsigned addr)).
+  destruct (zlt o addr).
   { rewrite Mem.setN_outside. now apply fmem_no_ptr. lia. }
-  destruct (zle (Ptrofs.unsigned addr + Z.of_nat (length (encode_val chunk v))) (Ptrofs.unsigned o)).
+  destruct (zle (addr + Z.of_nat (length (encode_val chunk v))) o).
   { rewrite Mem.setN_outside. now apply fmem_no_ptr. lia. }
-  rewrite <- (Zplus_minus (Ptrofs.unsigned addr) (Ptrofs.unsigned o)).
+  rewrite <- (Zplus_minus addr o).
   rewrite Mem.setN_same by lia.
   assert (Hvl: Forall not_ptr_fragment (encode_val chunk v)).
   { destruct v; try discriminate; now destruct chunk; repeat constructor. }
-  apply (proj1 (Forall_nth _ _) Hvl (Z.to_nat (Ptrofs.unsigned o - Ptrofs.unsigned addr))).
+  apply (proj1 (Forall_nth _ _) Hvl (Z.to_nat (o - addr))).
   lia.
 Qed.
 Next Obligation.
-  simpl; intros * _ * H o U P.
-  apply Mem.perm_store_2 with (1 := eq_sym H) in P.
-  now apply (fmem_unallocated m) in P.
+  simpl; intros * _ * H%eq_sym o U P.
+  apply Mem.perm_store_2 with (1 := H) in P.
+  now apply fmem_unallocated in P.
 Qed.
 
 Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
   match match_ptrofs addr with
   | Some a =>
-    if zle (Ptrofs.unsigned a + size_chunk chunk) Ptrofs.modulus
+    if zle (a + size_chunk chunk) Ptrofs.modulus
     then store chunk m a v
     else None
   | _ => None
@@ -294,7 +292,7 @@ Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
   | None => None
   | Some (a, s) =>
     Some (mkfmem
-      (alloc_frame m (Ptrofs.unsigned a) (Ptrofs.unsigned a + Ptrofs.unsigned sz))
+      (alloc_frame m a (a + sz))
       _ _ s _,
       a)
   end.
@@ -314,7 +312,7 @@ Definition free (m: fmem) (lo hi: ptrofs): option fmem :=
     | None => None
     | Some s' =>
       Some (mkfmem
-        (Mem.unchecked_free m 1%positive (Ptrofs.unsigned lo) (Ptrofs.unsigned hi))
+        (Mem.unchecked_free m 1%positive lo hi)
         _ _ s' _)
     end
   else None.
@@ -342,11 +340,11 @@ End FMem.
 Module BumpAlloc <: ALLOCATOR.
 
 Definition state := ptrofs.
-Definition unallocated (s o: ptrofs) := (Ptrofs.unsigned s) <= (Ptrofs.unsigned o).
+Definition unallocated (s o: ptrofs) := s <= o.
 
 Definition alloc (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
-  let lo := Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s) in
-  let hi := lo + Ptrofs.unsigned sz in
+  let lo := Z.lcm (min_safe_alignment sz) s in
+  let hi := lo + sz in
   if zlt hi Ptrofs.modulus
   then Some (Ptrofs.repr lo, Ptrofs.repr hi)
   else None.
@@ -362,7 +360,7 @@ Hypothesis A: alloc s m sz = Some (a, s').
 Hypothesis U: unallocated_on (unallocated s) m.
 
 Fact alloc_representable:
-  Ptrofs.unsigned a + Ptrofs.unsigned sz < Ptrofs.modulus.
+  a + sz < Ptrofs.modulus.
 Proof.
   revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
   rewrite Ptrofs.unsigned_repr. assumption.
@@ -385,8 +383,8 @@ Proof.
 - now apply Z.divide_lcm_r.
 Qed.
 
-Let lo := Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s).
-Let hi := lo + Ptrofs.unsigned sz.
+Let lo := Z.lcm (min_safe_alignment sz) s.
+Let hi := lo + sz.
 
 Fact lo_representable:
   hi < Ptrofs.modulus ->
@@ -409,12 +407,11 @@ Proof.
 Qed.
 
 Fact alloc_fresh:
-  unallocated_on (fun o =>
-    Ptrofs.unsigned a <= Ptrofs.unsigned o < Ptrofs.unsigned a + Ptrofs.unsigned sz) m.
+  unallocated_on (fun o => a <= o < a + sz) m.
 Proof.
   revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
   intros o Ho.
-  pose proof (min_safe_alignment_pos (Ptrofs.unsigned sz)).
+  pose proof (min_safe_alignment_pos sz).
   pose proof (Ptrofs.unsigned_range s).
   apply U; unfold unallocated.
   apply Z.le_trans with (2 := proj1 Ho).
@@ -424,9 +421,7 @@ Qed.
 
 Fact alloc_unallocated:
   forall o,
-    unallocated s' o ->
-    Ptrofs.unsigned o < Ptrofs.unsigned a
-    \/ Ptrofs.unsigned a + Ptrofs.unsigned sz <= Ptrofs.unsigned o.
+    unallocated s' o -> o < a \/ a + sz <= o.
 Proof.
   revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
   intros o; unfold unallocated.
@@ -443,15 +438,15 @@ Proof.
   apply U; unfold unallocated in *.
   apply Z.le_trans with (2 := Ho).
   rewrite Ptrofs.unsigned_repr by now apply hi_representable.
-  pose proof (min_safe_alignment_pos (Ptrofs.unsigned sz)).
+  pose proof (min_safe_alignment_pos sz).
   pose proof (Ptrofs.unsigned_range s).
   pose proof (Ptrofs.unsigned_range sz).
-  transitivity (Z.lcm (min_safe_alignment (Ptrofs.unsigned sz)) (Ptrofs.unsigned s)).
+  transitivity (Z.lcm (min_safe_alignment sz) s).
   apply lcm_le_r; lia. lia.
 Qed.
 
 Fact alloc_aligned:
-  (min_safe_alignment (Ptrofs.unsigned sz) | Ptrofs.unsigned a).
+  (min_safe_alignment sz | a).
 Proof.
   revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
   pose proof (Ptrofs.unsigned_range sz).
@@ -468,8 +463,7 @@ Hypothesis F: free s lo hi = Some s'.
 
 Fact free_unallocated_on:
   forall (m: mem),
-    unallocated_on (fun o =>
-      Ptrofs.unsigned lo <= Ptrofs.unsigned o < Ptrofs.unsigned hi) m ->
+    unallocated_on (fun o => lo <= o < hi) m ->
     unallocated_on (unallocated s) m ->
     unallocated_on (unallocated s') m.
 Proof. now revert F; unfold free; intros [= <-]. Qed.
