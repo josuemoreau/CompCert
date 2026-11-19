@@ -35,76 +35,127 @@ Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
   allocator needs to store across multiple calls.
   The [unallocated] predicate specifies the part of the memory that the
   allocator considers as unallocated, and in which it will allocate.
-  The address [a] returned by [alloc s m sz] must satisfy the following
+  The address [a] returned by [reserve s m sz] must satisfy the following
   properties:
 - [ [a]..[a+sz] ) can be indexed by the pointers of the architecture;
-- the memory space pointed to by [a] is unallocated;
-- the [unallocated] predicate on the new allocator state still covers
-  unallocated space in [m];
-- the [unallocated] predicate no longer covers [ [a]..[a+sz] );
-- the pointer [a] is suitably aligned, as specified by the C99 standard.
+- only [ [a]..[a+sz] ) is reserved, the remaining memory is still
+  unallocated;
+- [ [a]..[a+sz] ) is disjoint from the memory that is still unallocated;
+- the address [a] is suitably aligned, as specified by the C99 standard.
 *)
 
 Module Type ALLOCATOR.
 
 Parameter state: Type.
 Parameter unallocated: state -> ptrofs -> Prop.
-Parameter alloc: state -> mem -> ptrofs -> option (ptrofs * state).
-Parameter free: state -> ptrofs -> ptrofs -> option state.
+Parameter reserve: state -> mem -> ptrofs -> option (ptrofs * state).
+Parameter release: state -> ptrofs -> ptrofs -> option state.
 Parameter empty: state.
 
-Section ALLOC_AXIOMS.
+Section RESERVE_AXIOMS.
 
 Variables (s: state) (m: mem) (sz: ptrofs) (a: ptrofs) (s': state).
 
-Axiom alloc_representable:
-  alloc s m sz = Some (a, s') ->
-  a + sz < Ptrofs.modulus.
+Axiom reserve_representable:
+  reserve s m sz = Some (a, s') -> a + sz < Ptrofs.modulus.
 
-Axiom alloc_fresh:
-  alloc s m sz = Some (a, s') ->
-  unallocated_on (unallocated s) m ->
-  unallocated_on (fun o => a <= o < a + sz) m.
+Axiom reserve_unallocated:
+  reserve s m sz = Some (a, s') ->
+  forall (o: ptrofs),
+    a <= o < a + sz \/ unallocated s' o -> unallocated s o.
 
-Axiom alloc_unallocated:
-  alloc s m sz = Some (a, s') ->
-  forall o,
-    unallocated s' o -> o < a \/ a + sz <= o.
+Axiom reserve_unallocated_disj:
+  reserve s m sz = Some (a, s') ->
+  forall (o: ptrofs),
+    unallocated s' o ->
+    a <= o < a + sz ->
+    False.
 
-Axiom alloc_unallocated_on:
-  alloc s m sz = Some (a, s') ->
-  unallocated_on (unallocated s) m ->
-  unallocated_on (unallocated s') m.
+Axiom reserve_aligned:
+  reserve s m sz = Some (a, s') ->
+  (min_safe_alignment sz | a).
 
-Axiom alloc_aligned:
-  alloc s m sz = Some (a, s') -> (min_safe_alignment sz | a).
+End RESERVE_AXIOMS.
 
-End ALLOC_AXIOMS.
-
-Section FREE_AXIOMS.
+Section RELEASE_AXIOMS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
 
-Axiom free_unallocated_on:
-  free s lo hi = Some s' ->
+Axiom release_unallocated_on:
+  release s lo hi = Some s' ->
   forall (m: mem),
     unallocated_on (fun o => lo <= o < hi) m ->
     unallocated_on (unallocated s) m ->
     unallocated_on (unallocated s') m.
 
-End FREE_AXIOMS.
+End RELEASE_AXIOMS.
 
 End ALLOCATOR.
 
 Module AllocatorFacts (A: ALLOCATOR).
 
+Import A.
+
 Fact empty_unallocated:
-  unallocated_on (A.unallocated A.empty) Mem.empty.
+  unallocated_on (unallocated empty) Mem.empty.
 Proof. now intros o _; apply Mem.perm_empty. Qed.
+
+Section RESERVE_FACTS.
+
+Variables (s: state) (m: mem) (sz: ptrofs) (a: ptrofs) (s': state).
+
+Hypothesis (A: reserve s m sz = Some (a, s')).
+
+Fact reserve_fresh:
+  forall (o: ptrofs),
+    a <= o < a + sz -> unallocated s o.
+Proof.
+  intros o Ho.
+  apply reserve_unallocated with (1 := A).
+  now left.
+Qed.
+
+Fact reserve_unallocated_1:
+  forall (o: ptrofs),
+    unallocated s' o -> unallocated s o.
+Proof.
+  intros o Ho.
+  apply reserve_unallocated with (1 := A).
+  now right.
+Qed.
+
+Fact reserve_unallocated_2:
+  forall (o: ptrofs),
+    unallocated s' o -> o < a \/ a + sz <= o.
+Proof.
+  intros o Ho.
+  specialize (reserve_unallocated_disj _ _ _ _ _ A o Ho).
+  lia.
+Qed.
+
+Fact reserve_fresh_unallocated_on:
+  unallocated_on (unallocated s) m ->
+  unallocated_on (fun o => a <= o < a + sz) m.
+Proof.
+  intros U o Ho; apply U.
+  now apply reserve_fresh.
+Qed.
+
+Fact reserve_unallocated_on:
+  unallocated_on (unallocated s) m ->
+  unallocated_on (unallocated s') m.
+Proof.
+  intros U o Ho; apply U.
+  now apply reserve_unallocated_1.
+Qed.
+
+End RESERVE_FACTS.
 
 End AllocatorFacts.
 
 Module FMem (A: ALLOCATOR).
+
+Module AFacts := AllocatorFacts A.
 
 Definition not_ptr (v: val): bool :=
   match v with
@@ -121,7 +172,7 @@ Definition not_ptr_fragment (v: memval): Prop :=
 (** * Finite memory of size <= 2^|ptr|. *)
 
 (** A finite memory is built upon CompCert's block memory model.
-  It provides the following two additional properties:
+  It requires the following two additional properties:
 - the memory has only one block;
 - it does not store any [Vptr], as pointer values will now be [Vptrofs],
   and also because [Vptr] does not have any byte representation.
@@ -133,7 +184,7 @@ Record fmem := mkfmem {
   fmem_no_ptr:
     forall o, not_ptr_fragment (Mem.mem_contents fmem_mem)#o;
   fmem_allocator_state: A.state;
-  fmem_unallocated: unallocated_on (A.unallocated fmem_allocator_state) fmem_mem
+  fmem_unallocated: unallocated_on (A.unallocated fmem_allocator_state) fmem_mem;
 }.
 
 Definition perm (m: fmem) (addr: ptrofs) (k: perm_kind) (p: permission): Prop :=
@@ -288,7 +339,7 @@ Qed.
 
 #[program]
 Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
-  match A.alloc (fmem_allocator_state m) m sz with
+  match A.reserve (fmem_allocator_state m) m sz with
   | None => None
   | Some (a, s) =>
     Some (mkfmem
@@ -300,15 +351,16 @@ Next Obligation. now intros; apply fmem_oneblock. Qed.
 Next Obligation. now intros; apply fmem_no_ptr. Qed.
 Next Obligation.
   simpl; intros * A%eq_sym o U P.
-  specialize (A.alloc_unallocated _ _ _ _ _ A o U) as Ho'.
-  apply alloc_frame_perm_3 in P; [|lia].
-  now apply (A.alloc_unallocated_on _ _ _ _ _ A (fmem_unallocated m) o U).
+  apply alloc_frame_perm_3 in P.
+  2: now apply AFacts.reserve_unallocated_2 with (1 := A).
+  apply AFacts.reserve_unallocated_on with (1 := A) (o := o).
+  now apply fmem_unallocated. assumption. assumption.
 Qed.
 
 #[program]
 Definition free (m: fmem) (lo hi: ptrofs): option fmem :=
   if range_perm_dec m lo hi Cur Freeable then
-    match A.free (fmem_allocator_state m) lo hi with
+    match A.release (fmem_allocator_state m) lo hi with
     | None => None
     | Some s' =>
       Some (mkfmem
@@ -320,7 +372,7 @@ Next Obligation. now intros; simpl; apply fmem_oneblock. Qed.
 Next Obligation. now intros; simpl; apply fmem_no_ptr. Qed.
 Next Obligation.
   simpl; intros * P * F%eq_sym.
-  apply (A.free_unallocated_on _ _ _ _ F).
+  apply (A.release_unallocated_on _ _ _ _ F).
 - intros o Ho.
   unfold Mem.perm, Mem.unchecked_free; simpl.
   rewrite PMap.gss; case zle; [|lia]; case zlt; [|lia]. easy.
@@ -342,27 +394,27 @@ Module BumpAlloc <: ALLOCATOR.
 Definition state := ptrofs.
 Definition unallocated (s o: ptrofs) := s <= o.
 
-Definition alloc (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
+Definition reserve (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
   let lo := Z.lcm (min_safe_alignment sz) s in
   let hi := lo + sz in
   if zlt hi Ptrofs.modulus
   then Some (Ptrofs.repr lo, Ptrofs.repr hi)
   else None.
 
-Definition free (s: state) (lo hi: ptrofs): option state := Some s.
+Definition release (s: state) (lo hi: ptrofs): option state := Some s.
 
 Definition empty := Ptrofs.zero.
 
-Section ALLOC_FACTS.
+Section RESERVE_FACTS.
 
 Variables (s: state) (m: mem) (sz: ptrofs) (a: ptrofs) (s': state).
-Hypothesis A: alloc s m sz = Some (a, s').
+Hypothesis A: reserve s m sz = Some (a, s').
 Hypothesis U: unallocated_on (unallocated s) m.
 
-Fact alloc_representable:
+Fact reserve_representable:
   a + sz < Ptrofs.modulus.
 Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
   rewrite Ptrofs.unsigned_repr. assumption.
   split.
   - now apply Z.lcm_nonneg.
@@ -406,68 +458,58 @@ Proof.
   lia.
 Qed.
 
-Fact alloc_fresh:
-  unallocated_on (fun o => a <= o < a + sz) m.
+Fact reserve_unallocated:
+  forall (o: ptrofs),
+    a <= o < a + sz \/ unallocated s' o -> unallocated s o.
 Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
-  intros o Ho.
-  pose proof (min_safe_alignment_pos sz).
-  pose proof (Ptrofs.unsigned_range s).
-  apply U; unfold unallocated.
-  apply Z.le_trans with (2 := proj1 Ho).
+  revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
+  unfold unallocated.
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
-  apply lcm_le_r; lia.
-Qed.
-
-Fact alloc_unallocated:
-  forall o,
-    unallocated s' o -> o < a \/ a + sz <= o.
-Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
-  intros o; unfold unallocated.
   rewrite Ptrofs.unsigned_repr by now apply hi_representable.
-  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
-  now right.
-Qed.
-
-Fact alloc_unallocated_on:
-  unallocated_on (unallocated s') m.
-Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
-  intros o Ho.
-  apply U; unfold unallocated in *.
-  apply Z.le_trans with (2 := Ho).
-  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
-  pose proof (min_safe_alignment_pos sz).
-  pose proof (Ptrofs.unsigned_range s).
+  assert (s <= Z.lcm (min_safe_alignment sz) s) as Hlcm.
+  { apply lcm_le_r.
+    now apply Z.gt_lt, min_safe_alignment_pos.
+    now apply Ptrofs.unsigned_range. }
   pose proof (Ptrofs.unsigned_range sz).
-  transitivity (Z.lcm (min_safe_alignment sz) s).
-  apply lcm_le_r; lia. lia.
+  lia.
 Qed.
 
-Fact alloc_aligned:
+Fact reserve_unallocated_disj:
+  forall (o: ptrofs),
+    unallocated s' o ->
+    a <= o < a + sz ->
+    False.
+Proof.
+  revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
+  unfold unallocated.
+  rewrite Ptrofs.unsigned_repr by now apply hi_representable.
+  rewrite Ptrofs.unsigned_repr by now apply lo_representable.
+  lia.
+Qed.
+
+Fact reserve_aligned:
   (min_safe_alignment sz | a).
 Proof.
-  revert A; unfold alloc; destruct zlt; [intros [= <- <-]|discriminate].
+  revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
   pose proof (Ptrofs.unsigned_range sz).
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
   now apply Z.divide_lcm_l.
 Qed.
 
-End ALLOC_FACTS.
+End RESERVE_FACTS.
 
-Section FREE_FACTS.
+Section RELEASE_FACTS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
-Hypothesis F: free s lo hi = Some s'.
+Hypothesis F: release s lo hi = Some s'.
 
-Fact free_unallocated_on:
+Fact release_unallocated_on:
   forall (m: mem),
     unallocated_on (fun o => lo <= o < hi) m ->
     unallocated_on (unallocated s) m ->
     unallocated_on (unallocated s') m.
-Proof. now revert F; unfold free; intros [= <-]. Qed.
+Proof. now revert F; unfold release; intros [= <-]. Qed.
 
-End FREE_FACTS.
+End RELEASE_FACTS.
 
 End BumpAlloc.
