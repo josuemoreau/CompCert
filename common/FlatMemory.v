@@ -25,8 +25,13 @@ Local Notation "a # b" := (ZMap.get (Ptrofs.unsigned b) (PMap.get 1%positive a))
 #[local]
 Coercion Ptrofs.unsigned : ptrofs >-> Z.
 
+Parameter stack_size: ptrofs.
+
 Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
   forall o, P o -> ~Mem.perm m 1%positive o Max Nonempty.
+
+Definition disjoint_regions (P1 P2: ptrofs -> Prop) : Prop :=
+  forall o, P1 o -> P2 o -> False.
 
 (** * Abstract heap allocator *)
 
@@ -73,10 +78,7 @@ Axiom reserve_unallocated:
 
 Axiom reserve_unallocated_disj:
   reserve s m sz = Some (a, s') ->
-  forall (o: ptrofs),
-    unallocated s' o ->
-    a <= o < a + sz ->
-    False.
+  disjoint_regions (unallocated s') (fun o => a <= o < a + sz).
 
 Axiom reserve_aligned:
   reserve s m sz = Some (a, s') ->
@@ -140,7 +142,7 @@ Fact reserve_unallocated_2:
 Proof.
   intros o Ho.
   specialize (reserve_unallocated_disj _ _ _ _ _ A o Ho).
-  lia.
+  simpl; lia.
 Qed.
 
 Fact reserve_fresh_unallocated_on:
@@ -204,7 +206,10 @@ Definition not_ptr_fragment (v: memval): Prop :=
   It requires the following two additional properties:
 - the memory has only one block;
 - it does not store any [Vptr], as pointer values will now be [Vptrofs],
-  and also because [Vptr] does not have any byte representation.
+  and also because [Vptr] does not have any byte representation;
+- the unallocated heap, as seen by the allocated, is actually unallocated;
+- the stack is separated from the heap;
+- the unused part of the stack is actually unallocated.
 *)
 
 Record fmem := mkfmem {
@@ -212,9 +217,21 @@ Record fmem := mkfmem {
   fmem_oneblock: Mem.nextblock fmem_mem = 2%positive;
   fmem_no_ptr:
     forall o, not_ptr_fragment (Mem.mem_contents fmem_mem)#o;
-  fmem_allocator_state: A.state;
-  fmem_unallocated: unallocated_on (A.unallocated fmem_allocator_state) fmem_mem;
+  (* Heap allocation *)
+  fmem_heap_allocator_state: A.state;
+  fmem_heap_unallocated: unallocated_on (A.unallocated fmem_heap_allocator_state) fmem_mem;
+  (* Stack allocation *)
+  fmem_stack_usage: ptrofs;
+  fmem_stack_heap_disj:
+    disjoint_regions (fun o => Ptrofs.modulus - stack_size <= o)
+                     (A.unallocated fmem_heap_allocator_state);
+  fmem_stack_unallocated:
+    unallocated_on (fun o =>
+      Ptrofs.modulus - stack_size <= o < Ptrofs.modulus - fmem_stack_usage) fmem_mem;
 }.
+
+#[local]
+Arguments Z.sub : simpl never.
 
 Definition perm (m: fmem) (addr: ptrofs) (k: perm_kind) (p: permission): Prop :=
   Mem.perm m 1%positive addr k p.
@@ -268,7 +285,7 @@ Definition store (chunk: memory_chunk) (m: fmem) (addr: ptrofs) (v: val): option
   | false => None
   | true =>
     match Mem.store chunk m 1%positive addr v with
-    | Some m' => Some (mkfmem m' _ _ (fmem_allocator_state m) _)
+    | Some m' => Some (mkfmem m' _ _ (fmem_heap_allocator_state m) _ (fmem_stack_usage m) _ _)
     | None => None
     end
   end.
@@ -295,7 +312,13 @@ Qed.
 Next Obligation.
   simpl; intros * _ * H%eq_sym o U P.
   apply Mem.perm_store_2 with (1 := H) in P.
-  now apply fmem_unallocated in P.
+  now apply fmem_heap_unallocated in P.
+Qed.
+Next Obligation. now intros; apply fmem_stack_heap_disj. Qed.
+Next Obligation.
+  simpl; intros * _ * H%eq_sym o Ho P.
+  apply Mem.perm_store_2 with (1 := H) in P.
+  now apply fmem_stack_unallocated in P.
 Qed.
 
 Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
@@ -344,6 +367,17 @@ Proof.
   now apply perm_refl.
 Qed.
 
+Lemma alloc_frame_unallocated_disj:
+  forall m lo hi o,
+    ~Mem.perm (alloc_frame m lo hi) 1%positive o Max Nonempty ->
+    o < lo \/ hi <= o.
+Proof.
+  intros * H.
+  destruct (zle lo o); [|lia]. destruct (zlt o hi); [|lia].
+  elim H; apply Mem.perm_cur_max, Mem.perm_implies with (p1 := Freeable).
+  now apply (alloc_frame_perm_1 m lo hi o). constructor.
+Qed.
+
 Lemma alloc_frame_perm_2:
   forall (m: fmem) lo hi o k p,
     o < lo \/ hi <= o ->
@@ -368,12 +402,12 @@ Qed.
 
 #[program]
 Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
-  match A.reserve (fmem_allocator_state m) m sz with
+  match A.reserve (fmem_heap_allocator_state m) m sz with
   | None => None
   | Some (a, s) =>
     Some (mkfmem
       (alloc_frame m a (a + sz))
-      _ _ s _,
+      _ _ s _ (fmem_stack_usage m) _ _,
       a)
   end.
 Next Obligation. now intros; apply fmem_oneblock. Qed.
@@ -383,32 +417,61 @@ Next Obligation.
   apply alloc_frame_perm_3 in P.
   2: now apply AFacts.reserve_unallocated_2 with (1 := A).
   apply AFacts.reserve_unallocated_on with (1 := A) (o := o).
-  now apply fmem_unallocated. assumption. assumption.
+  now apply fmem_heap_unallocated. assumption. assumption.
+Qed.
+Next Obligation.
+  simpl; intros * A%eq_sym o Ho U.
+  apply AFacts.reserve_unallocated_1 with (1 := A) in U.
+  now apply (fmem_stack_heap_disj m o).
+Qed.
+Next Obligation.
+  simpl; intros * A%eq_sym o Ho P.
+  apply alloc_frame_perm_3 in P.
+- now apply (fmem_stack_unallocated m o).
+- destruct (zle a o); [|lia]. destruct (zlt o (a + sz)); [|lia].
+  elim (fmem_stack_heap_disj m o). lia.
+  now apply AFacts.reserve_fresh with (1 := A).
 Qed.
 
 #[program]
 Definition free (m: fmem) (lo hi: ptrofs): option fmem :=
-  if range_perm_dec m lo hi Cur Freeable then
-    match A.release (fmem_allocator_state m) lo hi with
-    | None => None
-    | Some s' =>
-      Some (mkfmem
-        (Mem.unchecked_free m 1%positive lo hi)
-        _ _ s' _)
-    end
+  if zle hi (Ptrofs.modulus - stack_size) then
+    if range_perm_dec m lo hi Cur Freeable then
+      match A.release (fmem_heap_allocator_state m) lo hi with
+      | None => None
+      | Some s' =>
+        Some (mkfmem
+          (Mem.unchecked_free m 1%positive lo hi)
+          _ _ s' _ (fmem_stack_usage m) _ _)
+      end
+    else None
   else None.
 Next Obligation. now intros; simpl; apply fmem_oneblock. Qed.
 Next Obligation. now intros; simpl; apply fmem_no_ptr. Qed.
 Next Obligation.
-  simpl; intros * P * F%eq_sym.
-  apply (AFacts.release_unallocated_on _ _ _ _ F).
+  simpl; intros * Hhi P * R%eq_sym.
+  apply AFacts.release_unallocated_on with (1 := R).
 - intros o Ho.
   unfold Mem.perm, Mem.unchecked_free; simpl.
   rewrite PMap.gss; case zle; [|lia]; case zlt; [|lia]. easy.
 - intros o Ho.
-  specialize (fmem_unallocated m o Ho).
+  specialize (fmem_heap_unallocated m o Ho).
   unfold Mem.perm, Mem.unchecked_free; simpl.
   rewrite PMap.gss. now case (_ && _).
+Qed.
+Next Obligation.
+  simpl; intros * Hhi P * R%eq_sym o Ho U.
+  destruct (A.release_unallocated_2 _ _ _ _ R o U).
+- lia.
+- now apply (fmem_stack_heap_disj m o).
+Qed.
+Next Obligation.
+  simpl; intros * Hhi P * R%eq_sym o Ho.
+  unfold Mem.perm, Mem.unchecked_free; simpl.
+  rewrite PMap.gss; destruct zle; [destruct zlt|]; simpl.
+- lia.
+- now apply (fmem_stack_unallocated m).
+- now apply (fmem_stack_unallocated m).
 Qed.
 
 End FMem.
