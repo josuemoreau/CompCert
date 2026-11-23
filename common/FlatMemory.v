@@ -9,7 +9,7 @@
 - [free]: invalidate a memory block.
 *)
 
-From Coq Require Import Zwf.
+From Coq Require Import ZifyClasses.
 Require Intv.
 Require Archi.
 Require Import Axioms Coqlib Maps Integers Floats AST Values.
@@ -20,18 +20,69 @@ Require Import Memory.
 Local Unset Elimination Schemes.
 Local Unset Case Analysis Schemes.
 
-Local Notation "a # b" := (ZMap.get (Ptrofs.unsigned b) (PMap.get 1%positive a)) (at level 1).
+Create HintDb fmem.
+
+(** * Simple extension of [lia] for pointer offsets. *)
+
+#[program, local]
+Instance InjPtrofs : InjTyp ptrofs Z := {|
+  inj  := Ptrofs.unsigned;
+  pred := (fun x => 0 <= x < Ptrofs.modulus);
+|}.
+Next Obligation. intros; simpl. apply Ptrofs.unsigned_range. Qed.
+Add Zify InjTyp InjPtrofs.
+
+#[program, local]
+Instance InjPtrofs_unsigned : UnOp Ptrofs.unsigned :=
+  {| TUOp x := x; TUOpInj := _ |}.
+Add Zify UnOp InjPtrofs_unsigned.
+
+#[program, local]
+Instance InjPtrofs_max_unsigned : CstOp Ptrofs.max_unsigned :=
+  {| TCst := Ptrofs.modulus - 1 |}.
+Add Zify CstOp InjPtrofs_max_unsigned.
 
 #[local]
 Coercion Ptrofs.unsigned : ptrofs >-> Z.
 
-Parameter stack_size: ptrofs.
+(** * Some helper functions. *)
 
 Definition unallocated_on (P: ptrofs -> Prop) (m: mem): Prop :=
   forall o, P o -> ~Mem.perm m 1%positive o Max Nonempty.
 
+Lemma unallocated_on_implies (P Q: ptrofs -> Prop) m:
+  unallocated_on P m ->
+  (forall o, Q o -> P o) ->
+  unallocated_on Q m.
+Proof. intros U H o Ho. now apply U, H. Qed.
+
+Lemma unallocated_on_perm (P: ptrofs -> Prop) m1 m2:
+  unallocated_on P m1 ->
+  (forall o k p,
+    P o ->
+    ~Mem.perm m1 1%positive o k p ->
+    ~Mem.perm m2 1%positive o k p) ->
+  unallocated_on P m2.
+Proof. intros U H o Ho. apply H. easy. now apply U. Qed.
+
+Hint Resolve unallocated_on_implies unallocated_on_perm : fmem.
+
 Definition disjoint_regions (P1 P2: ptrofs -> Prop) : Prop :=
   forall o, P1 o -> P2 o -> False.
+
+Lemma disjoint_regions_impl_l (P1 P2 Q: ptrofs -> Prop):
+  disjoint_regions P1 Q ->
+  (forall o, P2 o -> P1 o) ->
+  disjoint_regions P2 Q.
+Proof. intros D H o p q; apply D with (2 := q); apply H; assumption. Qed.
+
+Lemma disjoint_regions_impl_r(P Q1 Q2: ptrofs -> Prop):
+  disjoint_regions P Q1 ->
+  (forall o, Q2 o -> Q1 o) ->
+  disjoint_regions P Q2.
+Proof. intros D H o p q; apply D with (1 := p); apply H; assumption. Qed.
+
+Hint Resolve disjoint_regions_impl_l disjoint_regions_impl_r : fmem.
 
 (** * Abstract heap allocator *)
 
@@ -86,6 +137,9 @@ Axiom reserve_aligned:
 
 End RESERVE_AXIOMS.
 
+Hint Resolve reserve_representable reserve_unallocated
+  reserve_unallocated_disj reserve_aligned : fmem.
+
 Section RELEASE_AXIOMS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
@@ -101,6 +155,8 @@ Axiom release_unallocated_2:
     unallocated s' o -> lo <= o < hi \/ unallocated s o.
 
 End RELEASE_AXIOMS.
+
+Hint Resolve release_unallocated_1 release_unallocated_2 : fmem.
 
 End ALLOCATOR.
 
@@ -163,6 +219,10 @@ Qed.
 
 End RESERVE_FACTS.
 
+Hint Resolve reserve_fresh reserve_unallocated_1
+  reserve_unallocated_2 reserve_fresh_unallocated_on
+  reserve_unallocated_on | 2 : fmem.
+
 Section RELEASE_FACTS.
 
 Variables (s: state) (lo hi: ptrofs) (s': state).
@@ -182,11 +242,18 @@ Qed.
 
 End RELEASE_FACTS.
 
+Hint Resolve release_unallocated_on : fmem.
+
 End AllocatorFacts.
+
+Parameter stack_size: ptrofs.
+
+Local Notation "a # b" := (ZMap.get (Ptrofs.unsigned b) (PMap.get 1%positive a)) (at level 1).
 
 Module FMem (A: ALLOCATOR).
 
 Module AFacts := AllocatorFacts A.
+Import A AFacts.
 
 Definition not_ptr (v: val): bool :=
   match v with
@@ -229,6 +296,10 @@ Record fmem := mkfmem {
     unallocated_on (fun o =>
       Ptrofs.modulus - stack_size <= o < Ptrofs.modulus - fmem_stack_usage) fmem_mem;
 }.
+
+#[local]
+Hint Resolve fmem_oneblock fmem_no_ptr fmem_heap_unallocated
+  fmem_stack_heap_disj fmem_stack_unallocated : fmem.
 
 #[local]
 Arguments Z.sub : simpl never.
@@ -309,17 +380,9 @@ Next Obligation.
   apply (proj1 (Forall_nth _ _) Hvl (Z.to_nat (o - addr))).
   lia.
 Qed.
-Next Obligation.
-  simpl; intros * _ * H%eq_sym o U P.
-  apply Mem.perm_store_2 with (1 := H) in P.
-  now apply fmem_heap_unallocated in P.
-Qed.
-Next Obligation. now intros; apply fmem_stack_heap_disj. Qed.
-Next Obligation.
-  simpl; intros * _ * H%eq_sym o Ho P.
-  apply Mem.perm_store_2 with (1 := H) in P.
-  now apply fmem_stack_unallocated in P.
-Qed.
+Next Obligation. intros; eauto with mem fmem. Qed.
+Next Obligation. intros; eauto with mem fmem. Qed.
+Next Obligation. intros; eauto with mem fmem. Qed.
 
 Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
   match match_ptrofs addr with
@@ -400,6 +463,8 @@ Proof.
   destruct zle; [destruct zlt|]; simpl. lia. easy. easy.
 Qed.
 
+Hint Resolve alloc_frame_perm_1 alloc_frame_perm_2 alloc_frame_perm_3 : fmem.
+
 #[program]
 Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
   match A.reserve (fmem_heap_allocator_state m) m sz with
@@ -412,25 +477,15 @@ Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
   end.
 Next Obligation. now intros; apply fmem_oneblock. Qed.
 Next Obligation. now intros; apply fmem_no_ptr. Qed.
-Next Obligation.
-  simpl; intros * A%eq_sym o U P.
-  apply alloc_frame_perm_3 in P.
-  2: now apply AFacts.reserve_unallocated_2 with (1 := A).
-  apply AFacts.reserve_unallocated_on with (1 := A) (o := o).
-  now apply fmem_heap_unallocated. assumption. assumption.
-Qed.
-Next Obligation.
-  simpl; intros * A%eq_sym o Ho U.
-  apply AFacts.reserve_unallocated_1 with (1 := A) in U.
-  now apply (fmem_stack_heap_disj m o).
-Qed.
+Next Obligation. intros; eauto 10 with fmem. Qed.
+Next Obligation. intros; eauto with fmem. Qed.
 Next Obligation.
   simpl; intros * A%eq_sym o Ho P.
   apply alloc_frame_perm_3 in P.
 - now apply (fmem_stack_unallocated m o).
 - destruct (zle a o); [|lia]. destruct (zlt o (a + sz)); [|lia].
   elim (fmem_stack_heap_disj m o). lia.
-  now apply AFacts.reserve_fresh with (1 := A).
+  now apply reserve_fresh with (1 := A).
 Qed.
 
 #[program]
@@ -508,10 +563,7 @@ Fact reserve_representable:
 Proof.
   revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
   rewrite Ptrofs.unsigned_repr. assumption.
-  split.
-  - now apply Z.lcm_nonneg.
-  - change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
-    pose proof (Ptrofs.unsigned_range sz); lia.
+  split. now apply Z.lcm_nonneg. lia.
 Qed.
 
 Fact lcm_le_r:
@@ -533,22 +585,12 @@ Let hi := lo + sz.
 Fact lo_representable:
   hi < Ptrofs.modulus ->
   0 <= lo <= Ptrofs.max_unsigned.
-Proof.
-  pose proof (Ptrofs.unsigned_range sz).
-  change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
-  split. now apply Z.lcm_nonneg. lia.
-Qed.
+Proof. split. now apply Z.lcm_nonneg. lia. Qed.
 
 Fact hi_representable:
   hi < Ptrofs.modulus ->
   0 <= hi <= Ptrofs.max_unsigned.
-Proof.
-  intros H.
-  generalize (lo_representable H).
-  pose proof (Ptrofs.unsigned_range sz).
-  change Ptrofs.max_unsigned with (Ptrofs.modulus - 1).
-  lia.
-Qed.
+Proof. intros H. specialize (lo_representable H). lia. Qed.
 
 Fact reserve_unallocated:
   forall (o: ptrofs),
@@ -562,7 +604,6 @@ Proof.
   { apply lcm_le_r.
     now apply Z.gt_lt, min_safe_alignment_pos.
     now apply Ptrofs.unsigned_range. }
-  pose proof (Ptrofs.unsigned_range sz).
   lia.
 Qed.
 
@@ -583,7 +624,6 @@ Fact reserve_aligned:
   (min_safe_alignment sz | a).
 Proof.
   revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
-  pose proof (Ptrofs.unsigned_range sz).
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
   now apply Z.divide_lcm_l.
 Qed.
