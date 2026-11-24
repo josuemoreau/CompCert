@@ -20,6 +20,7 @@ From Coq Require Import String.
 Require Import Coqlib.
 Require Intv.
 Require Import AST Integers Floats Values Memory Globalenvs Builtins.
+Require Import Memabstract.
 Local Open Scope asttyp_scope.
 
 (** Backwards compatibility for Hint Rewrite locality attributes. *)
@@ -1620,13 +1621,15 @@ Qed.
 
 (** * Evaluation of builtin arguments *)
 
+Module Type EvalBuiltinArgs (Mem: ABSTRACT_MEM).
+
 Section EVAL_BUILTIN_ARG.
 
 Variable A: Type.
 Variable ge: Senv.t.
 Variable e: A -> val.
 Variable sp: val.
-Variable m: mem.
+Variable m: Mem.mem.
 
 Inductive eval_builtin_arg: builtin_arg A -> val -> Prop :=
   | eval_BA: forall x,
@@ -1718,7 +1721,7 @@ Variable ge1: Genv.t F1 V1.
 Variable ge2: Genv.t F2 V2.
 Variable e: A -> val.
 Variable sp: val.
-Variable m: mem.
+Variable m: Mem.mem.
 
 Hypothesis symbols_preserved:
   forall id, Genv.find_symbol ge2 id = Genv.find_symbol ge1 id.
@@ -1738,6 +1741,14 @@ Proof.
 Qed.
 
 End EVAL_BUILTIN_ARG_PRESERVED.
+
+End EvalBuiltinArgs.
+
+Module IEvalBuiltinArgs.
+  Include EvalBuiltinArgs Mem.
+End IEvalBuiltinArgs.
+
+Include IEvalBuiltinArgs.
 
 (** Compatibility with the "is less defined than" relation. *)
 

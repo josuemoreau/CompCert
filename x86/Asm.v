@@ -15,6 +15,33 @@
 Require Import Coqlib Maps.
 Require Import AST Integers Floats Values Memory Events Globalenvs Smallstep.
 Require Import Locations Stacklayout Conventions.
+Require Import Memabstract.
+
+Module Type SEM_PARAMS (Import M: ABSTRACT_MEM).
+
+Parameter alloc_frame: mem -> Z -> option (mem * val).
+Parameter free_frame: mem -> val -> Z -> option mem.
+
+Parameter init_mem: forall [F V : Type], program F V -> option mem.
+
+Parameter external_call:
+  external_function ->
+  Senv.t -> list val -> mem -> trace -> val -> mem -> Prop.
+
+Axiom external_call_determ:
+  forall ef ge vargs m t1 vres1 m1 t2 vres2 m2,
+    external_call ef ge vargs m t1 vres1 m1 ->
+    external_call ef ge vargs m t2 vres2 m2 ->
+    match_traces ge t1 t2 /\ (t1 = t2 -> vres1 = vres2 /\ m1 = m2).
+
+Axiom external_call_trace_length:
+  forall ef ge vargs m t vres m',
+    external_call ef ge vargs m t vres m' -> (length t <= 1)%nat.
+
+End SEM_PARAMS.
+
+Module AsmSem (Import M: ABSTRACT_MEM) (Import SP: SEM_PARAMS M)
+              (Import B: EvalBuiltinArgs M).
 
 (** * Abstract syntax *)
 
@@ -431,15 +458,15 @@ Definition eval_addrmode (a: addrmode) (rs: regset) : val :=
 *)
 
 Definition compare_ints (x y: val) (rs: regset) (m: mem): regset :=
-  rs #ZF  <- (Val.cmpu (Mem.valid_pointer m) Ceq x y)
-     #CF  <- (Val.cmpu (Mem.valid_pointer m) Clt x y)
+  rs #ZF  <- (Val.cmpu (valid_pointer m) Ceq x y)
+     #CF  <- (Val.cmpu (valid_pointer m) Clt x y)
      #SF  <- (Val.negative (Val.sub x y))
      #OF  <- (Val.sub_overflow x y)
      #PF  <- Vundef.
 
 Definition compare_longs (x y: val) (rs: regset) (m: mem): regset :=
-  rs #ZF  <- (Val.maketotal (Val.cmplu (Mem.valid_pointer m) Ceq x y))
-     #CF  <- (Val.maketotal (Val.cmplu (Mem.valid_pointer m) Clt x y))
+  rs #ZF  <- (Val.maketotal (Val.cmplu (valid_pointer m) Ceq x y))
+     #CF  <- (Val.maketotal (Val.cmplu (valid_pointer m) Clt x y))
      #SF  <- (Val.negativel (Val.subl x y))
      #OF  <- (Val.subl_overflow x y)
      #PF  <- Vundef.
@@ -549,7 +576,8 @@ Definition eval_testcond (c: testcond) (rs: regset) : option bool :=
 
 Inductive outcome: Type :=
   | Next: regset -> mem -> outcome
-  | Stuck: outcome.
+  | Stuck: outcome
+  | StackOverflow: outcome.
 
 (** Manipulations over the [PC] register: continuing with the next
   instruction ([nextinstr]) or branching to a label ([goto_label]).
@@ -576,7 +604,7 @@ Definition goto_label (f: function) (lbl: label) (rs: regset) (m: mem) :=
 
 Definition exec_load (chunk: memory_chunk) (m: mem)
                      (a: addrmode) (rs: regset) (rd: preg) :=
-  match Mem.loadv chunk m (eval_addrmode a rs) with
+  match loadv chunk m (eval_addrmode a rs) with
   | Some v => Next (nextinstr_nf (rs#rd <- v)) m
   | None => Stuck
   end.
@@ -584,7 +612,7 @@ Definition exec_load (chunk: memory_chunk) (m: mem)
 Definition exec_store (chunk: memory_chunk) (m: mem)
                       (a: addrmode) (rs: regset) (r1: preg)
                       (destroyed: list preg) :=
-  match Mem.storev chunk m (eval_addrmode a rs) (rs r1) with
+  match storev chunk m (eval_addrmode a rs) (rs r1) with
   | Some m' => Next (nextinstr_nf (undef_regs destroyed rs)) m'
   | None => Stuck
   end.
@@ -947,30 +975,28 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
   | Plabel lbl =>
       Next (nextinstr rs) m
   | Pallocframe sz ofs_ra ofs_link =>
-      let (m1, stk) := Mem.alloc m 0 sz in
-      let sp := Vptr stk Ptrofs.zero in
-      match Mem.storev Mptr m1 (Val.offset_ptr sp ofs_link) rs#RSP with
-      | None => Stuck
-      | Some m2 =>
-          match Mem.storev Mptr m2 (Val.offset_ptr sp ofs_ra) rs#RA with
+      match alloc_frame m sz with
+      | None => StackOverflow
+      | Some (m1, sp) =>
+          match storev Mptr m1 (Val.offset_ptr sp ofs_link) rs#RSP with
           | None => Stuck
-          | Some m3 => Next (nextinstr (rs #RAX <- (rs#RSP) #RSP <- sp)) m3
+          | Some m2 =>
+              match storev Mptr m2 (Val.offset_ptr sp ofs_ra) rs#RA with
+              | None => Stuck
+              | Some m3 => Next (nextinstr (rs #RAX <- (rs#RSP) #RSP <- sp)) m3
+              end
           end
       end
   | Pfreeframe sz ofs_ra ofs_link =>
-      match Mem.loadv Mptr m (Val.offset_ptr rs#RSP ofs_ra) with
+      match loadv Mptr m (Val.offset_ptr rs#RSP ofs_ra) with
       | None => Stuck
       | Some ra =>
-          match Mem.loadv Mptr m (Val.offset_ptr rs#RSP ofs_link) with
+          match loadv Mptr m (Val.offset_ptr rs#RSP ofs_link) with
           | None => Stuck
           | Some sp =>
-              match rs#RSP with
-              | Vptr stk ofs =>
-                  match Mem.free m stk 0 sz with
-                  | None => Stuck
-                  | Some m' => Next (nextinstr (rs#RSP <- sp #RA <- ra)) m'
-                  end
-              | _ => Stuck
+              match free_frame m rs#RSP sz with
+              | None => Stuck
+              | Some m' => Next (nextinstr (rs#RSP <- sp #RA <- ra)) m'
               end
           end
       end
@@ -1075,7 +1101,7 @@ Inductive extcall_arg (rs: regset) (m: mem): loc -> val -> Prop :=
       extcall_arg rs m (R r) (rs (preg_of r))
   | extcall_arg_stack: forall ofs ty bofs v,
       bofs = Stacklayout.fe_ofs_arg + 4 * ofs ->
-      Mem.loadv (chunk_of_type ty) m
+      loadv (chunk_of_type ty) m
                 (Val.offset_ptr (rs (IR RSP)) (Ptrofs.repr bofs)) = Some v ->
       extcall_arg rs m (S Outgoing ofs ty) v.
 
@@ -1134,7 +1160,7 @@ End RELSEM.
 
 Inductive initial_state (p: program): state -> Prop :=
   | initial_state_intro: forall m0,
-      Genv.init_mem p = Some m0 ->
+      init_mem p = Some m0 ->
       let ge := Genv.globalenv p in
       let rs0 :=
         (Pregmap.init Vundef)
@@ -1223,3 +1249,25 @@ Definition data_preg (r: preg) : bool :=
   | RA => false
   end.
 
+End AsmSem.
+
+Module IAsmParams <: SEM_PARAMS Mem.
+
+Definition alloc_frame m sz :=
+  let (m1, stk) := Mem.alloc m 0 sz in
+  Some (m1, Vptr stk Ptrofs.zero).
+
+Definition free_frame m base sz :=
+  match base with
+  | Vptr stk ofs => Mem.free m stk 0 sz
+  | _ => None
+  end.
+
+Definition init_mem := Genv.init_mem.
+Definition external_call := external_call.
+Definition external_call_determ := external_call_determ.
+Definition external_call_trace_length := external_call_trace_length.
+
+End IAsmParams.
+
+Include AsmSem Mem IAsmParams Events.
