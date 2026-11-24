@@ -555,6 +555,37 @@ Next Obligation.
   apply (fmem_stack_unallocated m o). lia. eassumption. lia. lia.
 Qed.
 
+#[program]
+Definition free_stack (m: fmem) (sz: ptrofs) : option fmem :=
+  let lo := Ptrofs.modulus - fmem_stack_usage m in
+  let new_usage := Ptrofs.sub (fmem_stack_usage m) sz in
+  let hi := Ptrofs.modulus - new_usage in
+  (* if zlt 0 sz then *)
+  if zle sz (fmem_stack_usage m) then
+    Some (mkfmem
+      (Mem.unchecked_free m 1%positive lo hi)
+      _ _ (fmem_heap_allocator_state m) _ new_usage _ _)
+  else None.
+  (* else Some m. *)
+Next Obligation. now intros; apply fmem_oneblock. Qed.
+Next Obligation. now intros; apply fmem_no_ptr. Qed.
+Next Obligation.
+  simpl; intros * Hsz o U P.
+  apply (fmem_heap_unallocated m) with (1 := U).
+  revert P; unfold Mem.perm, Ptrofs.sub; simpl; rewrite PMap.gss.
+  rewrite Ptrofs.unsigned_repr by lia.
+  destruct zle; [|easy]; destruct zlt; [|easy]. contradiction.
+Qed.
+Next Obligation. now intros; apply fmem_stack_heap_disj. Qed.
+Next Obligation.
+  simpl; intros * Hsz o.
+  unfold Ptrofs.sub; rewrite Ptrofs.unsigned_repr by lia.
+  intro Ho.
+  unfold Mem.perm, Mem.unchecked_free; simpl; rewrite PMap.gss.
+  destruct zle; [destruct zlt|]; simpl.
+  easy. lia. apply (fmem_stack_unallocated m o); lia.
+Qed.
+
 End FMem.
 
 (** * Allocator model *)
