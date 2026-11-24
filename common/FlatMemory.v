@@ -529,6 +529,32 @@ Next Obligation.
 - now apply (fmem_stack_unallocated m).
 Qed.
 
+#[program]
+Definition alloc_stack (m: fmem) (sz: ptrofs) : option fmem :=
+  if zlt (fmem_stack_usage m + sz) stack_size then
+    let hi := Ptrofs.modulus - fmem_stack_usage m in
+    let lo := hi - sz in
+    Some (mkfmem
+      (alloc_frame m lo hi) _ _ (fmem_heap_allocator_state m) _
+      (Ptrofs.add (fmem_stack_usage m) sz) _ _)
+  else None.
+Next Obligation. now intros; apply fmem_oneblock. Qed.
+Next Obligation. now intros; apply fmem_no_ptr. Qed.
+Next Obligation.
+  intros * H hi lo o U P.
+  apply (fmem_heap_unallocated m) with (1 := U).
+  destruct (zle lo o).
+- elim (fun H => fmem_stack_heap_disj m o H U); lia.
+- now apply alloc_frame_perm_3 with (2 := P); left; apply Z.gt_lt.
+Qed.
+Next Obligation. now intros; apply fmem_stack_heap_disj. Qed.
+Next Obligation.
+  intros * H hi lo o.
+  unfold Ptrofs.add; rewrite Ptrofs.unsigned_repr.
+  intros Ho P. apply alloc_frame_perm_3 in P.
+  apply (fmem_stack_unallocated m o). lia. eassumption. lia. lia.
+Qed.
+
 End FMem.
 
 (** * Allocator model *)
