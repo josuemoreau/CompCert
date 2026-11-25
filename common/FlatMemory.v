@@ -289,12 +289,15 @@ Record mem' := mkfmem {
   fmem_heap_unallocated: unallocated_on (A.unallocated fmem_heap_allocator_state) fmem_mem;
   (* Stack allocation *)
   fmem_stack_usage: ptrofs;
+  (* The stack starts at [Ptrofs.max_unsigned] instead of [Ptrofs.modulus].
+     We loose one byte, but it is necessary to make sure that a zero-sized
+     stack corresponds to a valid pointer. *)
   fmem_stack_heap_disj:
-    disjoint_regions (fun o => Ptrofs.modulus - stack_size <= o)
+    disjoint_regions (fun o => Ptrofs.max_unsigned - stack_size <= o)
                      (A.unallocated fmem_heap_allocator_state);
   fmem_stack_unallocated:
     unallocated_on (fun o =>
-      Ptrofs.modulus - stack_size <= o < Ptrofs.modulus - fmem_stack_usage) fmem_mem;
+      Ptrofs.max_unsigned - stack_size <= o < Ptrofs.max_unsigned - fmem_stack_usage) fmem_mem;
 }.
 
 Definition mem := mem'.
@@ -489,7 +492,7 @@ Qed.
 
 #[program]
 Definition free (m: mem) (lo hi: ptrofs): option mem :=
-  if zle hi (Ptrofs.modulus - stack_size) then
+  if zle hi (Ptrofs.max_unsigned - stack_size) then
     if range_perm_dec m lo hi Cur Freeable then
       match A.release (fmem_heap_allocator_state m) lo hi with
       | None => None
@@ -531,7 +534,7 @@ Qed.
 #[program]
 Definition alloc_stack (m: mem) (sz: ptrofs) : option mem :=
   if zlt (fmem_stack_usage m + sz) stack_size then
-    let hi := Ptrofs.modulus - fmem_stack_usage m in
+    let hi := Ptrofs.max_unsigned - fmem_stack_usage m in
     let lo := hi - sz in
     Some (mkfmem
       (alloc_frame m lo hi) _ _ (fmem_heap_allocator_state m) _
@@ -556,9 +559,9 @@ Qed.
 
 #[program]
 Definition free_stack (m: mem) (sz: ptrofs) : option mem :=
-  let lo := Ptrofs.modulus - fmem_stack_usage m in
+  let lo := Ptrofs.max_unsigned - fmem_stack_usage m in
   let new_usage := Ptrofs.sub (fmem_stack_usage m) sz in
-  let hi := Ptrofs.modulus - new_usage in
+  let hi := Ptrofs.max_unsigned - new_usage in
   (* if zlt 0 sz then *)
   if zle sz (fmem_stack_usage m) then
     Some (mkfmem
