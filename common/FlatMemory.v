@@ -250,7 +250,7 @@ Parameter stack_size: ptrofs.
 
 Local Notation "a # b" := (ZMap.get (Ptrofs.unsigned b) (PMap.get 1%positive a)) (at level 1).
 
-Module FMem (A: ALLOCATOR).
+Module Make (A: ALLOCATOR).
 
 Module AFacts := AllocatorFacts A.
 Import A AFacts.
@@ -279,7 +279,7 @@ Definition not_ptr_fragment (v: memval): Prop :=
 - the unused part of the stack is actually unallocated.
 *)
 
-Record fmem := mkfmem {
+Record mem' := mkfmem {
   fmem_mem:> Mem.mem';
   fmem_oneblock: Mem.nextblock fmem_mem = 2%positive;
   fmem_no_ptr:
@@ -297,6 +297,8 @@ Record fmem := mkfmem {
       Ptrofs.modulus - stack_size <= o < Ptrofs.modulus - fmem_stack_usage) fmem_mem;
 }.
 
+Definition mem := mem'.
+
 #[local]
 Hint Resolve fmem_oneblock fmem_no_ptr fmem_heap_unallocated
   fmem_stack_heap_disj fmem_stack_unallocated : fmem.
@@ -304,30 +306,27 @@ Hint Resolve fmem_oneblock fmem_no_ptr fmem_heap_unallocated
 #[local]
 Arguments Z.sub : simpl never.
 
-Definition perm (m: fmem) (addr: ptrofs) (k: perm_kind) (p: permission): Prop :=
+Definition perm (m: mem) (addr: ptrofs) (k: perm_kind) (p: permission): Prop :=
   Mem.perm m 1%positive addr k p.
 
 Definition perm_dec:
   forall m addr k p, {perm m addr k p} + {~ perm m addr k p}.
 Proof. now intros; apply Mem.perm_dec. Defined.
 
-Definition range_perm (m: fmem) (lo hi: ptrofs) (k: perm_kind) (p: permission): Prop :=
+Definition range_perm (m: mem) (lo hi: ptrofs) (k: perm_kind) (p: permission): Prop :=
   Mem.range_perm m 1%positive lo hi k p.
 
 Lemma range_perm_dec:
   forall m lo hi k p, {range_perm m lo hi k p} + {~ range_perm m lo hi k p}.
 Proof. now intros; apply Mem.range_perm_dec. Defined.
 
-Definition valid_access (m: fmem) (chunk: memory_chunk) (addr: ptrofs) (p: permission): Prop :=
+Definition valid_access (m: mem) (chunk: memory_chunk) (addr: ptrofs) (p: permission): Prop :=
   Mem.valid_access m chunk 1%positive addr p.
 
 Lemma valid_access_dec:
   forall m chunk ofs p,
   {valid_access m chunk ofs p} + {~ valid_access m chunk ofs p}.
 Proof. now intros; apply Mem.valid_access_dec. Defined.
-
-Definition valid_pointer (m: fmem) (addr: ptrofs): bool :=
-  perm_dec m addr Cur Nonempty.
 
 Definition match_ptrofs (v: val) : option ptrofs :=
   match v with
@@ -336,10 +335,10 @@ Definition match_ptrofs (v: val) : option ptrofs :=
   | _ => None
   end.
 
-Definition load (chunk: memory_chunk) (m: fmem) (addr: ptrofs): option val :=
+Definition load (chunk: memory_chunk) (m: mem) (addr: ptrofs): option val :=
   Mem.load chunk m 1%positive addr.
 
-Definition loadv (chunk: memory_chunk) (m: fmem) (addr: val): option val :=
+Definition loadv (chunk: memory_chunk) (m: mem) (addr: val): option val :=
   match match_ptrofs addr with
   | Some a =>
     if zle (a + size_chunk chunk) Ptrofs.modulus
@@ -351,7 +350,7 @@ Definition loadv (chunk: memory_chunk) (m: fmem) (addr: val): option val :=
 #[local] Obligation Tactic := idtac.
 
 #[program]
-Definition store (chunk: memory_chunk) (m: fmem) (addr: ptrofs) (v: val): option fmem :=
+Definition store (chunk: memory_chunk) (m: mem) (addr: ptrofs) (v: val): option mem :=
   match not_ptr v with
   | false => None
   | true =>
@@ -384,7 +383,7 @@ Next Obligation. intros; eauto with mem fmem. Qed.
 Next Obligation. intros; eauto with mem fmem. Qed.
 Next Obligation. intros; eauto with mem fmem. Qed.
 
-Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
+Definition storev (chunk: memory_chunk) (m: mem) (addr v: val): option mem :=
   match match_ptrofs addr with
   | Some a =>
     if zle (a + size_chunk chunk) Ptrofs.modulus
@@ -394,7 +393,7 @@ Definition storev (chunk: memory_chunk) (m: fmem) (addr v: val): option fmem :=
   end.
 
 #[program]
-Definition alloc_frame (m: fmem) (lo hi: Z): mem :=
+Definition alloc_frame (m: mem) (lo hi: Z): Mem.mem :=
   Mem.mkmem
     (Mem.mem_contents m)
     (PMap.set 1
@@ -442,7 +441,7 @@ Proof.
 Qed.
 
 Lemma alloc_frame_perm_2:
-  forall (m: fmem) lo hi o k p,
+  forall (m: mem) lo hi o k p,
     o < lo \/ hi <= o ->
     Mem.perm m 1%positive o k p ->
     Mem.perm (alloc_frame m lo hi) 1%positive o k p.
@@ -453,7 +452,7 @@ Proof.
 Qed.
 
 Lemma alloc_frame_perm_3:
-  forall (m: fmem) lo hi o k p,
+  forall (m: mem) lo hi o k p,
     o < lo \/ hi <= o ->
     Mem.perm (alloc_frame m lo hi) 1%positive o k p ->
     Mem.perm m 1%positive o k p.
@@ -466,7 +465,7 @@ Qed.
 Hint Resolve alloc_frame_perm_1 alloc_frame_perm_2 alloc_frame_perm_3 : fmem.
 
 #[program]
-Definition alloc (m: fmem) (sz: ptrofs): option (fmem * ptrofs) :=
+Definition alloc (m: mem) (sz: ptrofs): option (mem * ptrofs) :=
   match A.reserve (fmem_heap_allocator_state m) m sz with
   | None => None
   | Some (a, s) =>
@@ -489,7 +488,7 @@ Next Obligation.
 Qed.
 
 #[program]
-Definition free (m: fmem) (lo hi: ptrofs): option fmem :=
+Definition free (m: mem) (lo hi: ptrofs): option mem :=
   if zle hi (Ptrofs.modulus - stack_size) then
     if range_perm_dec m lo hi Cur Freeable then
       match A.release (fmem_heap_allocator_state m) lo hi with
@@ -530,7 +529,7 @@ Next Obligation.
 Qed.
 
 #[program]
-Definition alloc_stack (m: fmem) (sz: ptrofs) : option fmem :=
+Definition alloc_stack (m: mem) (sz: ptrofs) : option mem :=
   if zlt (fmem_stack_usage m + sz) stack_size then
     let hi := Ptrofs.modulus - fmem_stack_usage m in
     let lo := hi - sz in
@@ -556,7 +555,7 @@ Next Obligation.
 Qed.
 
 #[program]
-Definition free_stack (m: fmem) (sz: ptrofs) : option fmem :=
+Definition free_stack (m: mem) (sz: ptrofs) : option mem :=
   let lo := Ptrofs.modulus - fmem_stack_usage m in
   let new_usage := Ptrofs.sub (fmem_stack_usage m) sz in
   let hi := Ptrofs.modulus - new_usage in
@@ -586,7 +585,7 @@ Next Obligation.
   easy. lia. apply (fmem_stack_unallocated m o); lia.
 Qed.
 
-End FMem.
+End Make.
 
 (** * Allocator model *)
 
