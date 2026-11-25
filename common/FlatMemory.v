@@ -135,6 +135,9 @@ Axiom reserve_aligned:
   reserve s m sz = Some (a, s') ->
   (min_safe_alignment sz | a).
 
+Axiom reserve_nonnull:
+  reserve s m sz = Some (a, s') -> a <> Ptrofs.zero.
+
 End RESERVE_AXIOMS.
 
 Hint Resolve reserve_representable reserve_unallocated
@@ -597,19 +600,59 @@ End Make.
 
 Module BumpAlloc <: ALLOCATOR.
 
-Definition state := ptrofs.
-Definition unallocated (s o: ptrofs) := s <= o.
+Record state' : Type := mkstate {
+  ptr: ptrofs;
+  not_null: ptr <> Ptrofs.zero;
+}.
 
+Definition state := state'.
+Definition unallocated (s: state) (o: ptrofs) := ptr s <= o.
+
+Fact lcm_le_r:
+  forall x y, 0 < x -> 0 <= y -> y <= Z.lcm x y.
+Proof.
+  intros * Hx Hy.
+  destruct (zeq y 0) as [->|].
+  now rewrite Z.lcm_0_r.
+  apply Z.divide_pos_le.
+- pose proof (Z.lcm_nonneg x y).
+  pose proof (Z.lcm_eq_0 x y).
+  lia.
+- now apply Z.divide_lcm_r.
+Qed.
+
+Fact offset_nonnull:
+  forall (sz: Z) (s: state) (o: ptrofs),
+    Z.lcm (min_safe_alignment sz) (ptr s) + o < Ptrofs.modulus ->
+    Ptrofs.repr (Z.lcm (min_safe_alignment sz) (ptr s) + o) <> Ptrofs.zero.
+Proof.
+  intros * Hlo H.
+  assert (ptr s <= Z.lcm (min_safe_alignment sz) (ptr s)).
+  { apply lcm_le_r.
+    now apply Z.gt_lt, min_safe_alignment_pos.
+    now apply Ptrofs.unsigned_range. }
+  apply Ptrofs.samerepr_eqm, Ptrofs.eqm_small_eq in H.
+  enough (1 <= Z.lcm (min_safe_alignment sz) (ptr s) + o) by lia.
+  transitivity (ptr s + o).
+  { apply Znot_gt_le; intro; elim (not_null s).
+    rewrite <- (Ptrofs.repr_unsigned (ptr s)).
+    now replace (Ptrofs.unsigned (ptr s)) with 0 by lia. }
+  lia. lia. lia.
+Qed.
+
+#[program]
 Definition reserve (s: state) (m: mem) (sz: ptrofs): option (ptrofs * state) :=
-  let lo := Z.lcm (min_safe_alignment sz) s in
+  let lo := Z.lcm (min_safe_alignment sz) (ptr s) in
   let hi := lo + sz in
   if zlt hi Ptrofs.modulus
-  then Some (Ptrofs.repr lo, Ptrofs.repr hi)
+  then Some (Ptrofs.repr lo, mkstate (Ptrofs.repr hi) _)
   else None.
+Next Obligation. now apply offset_nonnull. Qed.
 
 Definition release (s: state) (lo hi: ptrofs): option state := Some s.
 
-Definition empty := Ptrofs.zero.
+#[program]
+Definition empty: state := mkstate Ptrofs.one _.
 
 Section RESERVE_FACTS.
 
@@ -625,20 +668,7 @@ Proof.
   split. now apply Z.lcm_nonneg. lia.
 Qed.
 
-Fact lcm_le_r:
-  forall x y, 0 < x -> 0 <= y -> y <= Z.lcm x y.
-Proof.
-  intros * Hx Hy.
-  destruct (zeq y 0) as [->|].
-  now rewrite Z.lcm_0_r.
-  apply Z.divide_pos_le.
-- pose proof (Z.lcm_nonneg x y).
-  pose proof (Z.lcm_eq_0 x y).
-  lia.
-- now apply Z.divide_lcm_r.
-Qed.
-
-Let lo := Z.lcm (min_safe_alignment sz) s.
+Let lo := Z.lcm (min_safe_alignment sz) (ptr s).
 Let hi := lo + sz.
 
 Fact lo_representable:
@@ -656,10 +686,10 @@ Fact reserve_unallocated:
     a <= o < a + sz \/ unallocated s' o -> unallocated s o.
 Proof.
   revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
-  unfold unallocated.
+  unfold unallocated. simpl.
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
   rewrite Ptrofs.unsigned_repr by now apply hi_representable.
-  assert (s <= Z.lcm (min_safe_alignment sz) s) as Hlcm.
+  assert (ptr s <= Z.lcm (min_safe_alignment sz) (ptr s)) as Hlcm.
   { apply lcm_le_r.
     now apply Z.gt_lt, min_safe_alignment_pos.
     now apply Ptrofs.unsigned_range. }
@@ -673,7 +703,7 @@ Fact reserve_unallocated_disj:
     False.
 Proof.
   revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
-  unfold unallocated.
+  unfold unallocated. simpl.
   rewrite Ptrofs.unsigned_repr by now apply hi_representable.
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
   lia.
@@ -685,6 +715,13 @@ Proof.
   revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
   rewrite Ptrofs.unsigned_repr by now apply lo_representable.
   now apply Z.divide_lcm_l.
+Qed.
+
+Fact reserve_nonnull: a <> Ptrofs.zero.
+Proof.
+  revert A; unfold reserve; destruct zlt; [intros [= <- <-]|discriminate].
+  rewrite <- (Z.add_0_r (Z.lcm _ _)), <- Ptrofs.unsigned_zero.
+  apply offset_nonnull. rewrite Ptrofs.unsigned_zero; lia.
 Qed.
 
 End RESERVE_FACTS.
